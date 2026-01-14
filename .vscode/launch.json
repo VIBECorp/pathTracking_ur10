@@ -1,0 +1,186 @@
+{
+    // IntelliSense를 사용하여 가능한 특성에 대해 알아보세요.
+    // 기존 특성에 대한 설명을 보려면 가리킵니다.
+    // 자세한 내용을 보려면 https://go.microsoft.com/fwlink/?linkid=830387을(를) 방문하세요.
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Train UR10",
+            "type": "python",
+            "request": "launch",
+            "program": "tracking/train.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--logdir", "tracking_training_ur10",
+
+                "--name", "ur10_random_260112",
+                "--robot_scene", "8",
+
+                "--online_trajectory_time_step", "0.1",
+                "--hidden_layer_activation", "swish",
+                "--online_trajectory_duration", "16.0",
+                "--obstacle_scene", "0",
+
+                "--target_link_offset", "[0, 0, 0]",
+
+                "--last_layer_activation", "tanh",
+                "--no_log_std_activation",
+                "--use_controller_target_velocities",
+                "--spline_dir", "ur10/random/train",
+                
+                "--spline_u_arc_start_range", "[0.0, 0.8]",
+                "--spline_u_arc_diff_min", "0.2",
+                "--spline_normalize_duration",
+                "--spline_termination_max_deviation", "0.25",
+                "--obs_spline_n_next", "7",
+                "--obs_spline_add_length",
+                "--obs_spline_add_distance_per_knot",
+                "--spline_distance_max_reward", "2.0",
+                "--spline_deviation_max_threshold", "0.25",
+                "--punish_spline_max_deviation",
+                "--spline_max_deviation_max_punishment", "0.9",
+                "--punish_spline_mean_deviation",
+                "--spline_mean_deviation_max_punishment", "0.9",
+
+                "--spline_deviation_weighting_factors", "[1.0, 1.0, 1.0, 0.9, 0.8, 0.7]",
+
+                "--batch_size_factor", "6.0",
+                "--spline_braking_extra_time_steps", "0",
+                "--terminate_on_robot_stop",
+                "--solver_iterations", "50",
+
+                "--iterations_per_checkpoint", "20",
+                
+                "--time", "500",
+
+                "--num_workers", 
+                "10",
+                "--num_gpus",
+                "1",
+            ]
+        },
+        {
+            // Run random_agent with UR10 (6 DOF) to generate random trajectories
+            "name": "Random Agent: UR10",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "tracking/random_agent.py",
+            "console": "integratedTerminal",
+            "env": {
+                "DISPLAY": ":1"
+            },
+            "args": [
+                "--robot_scene",
+                "8", // UR10
+                // "--robot_scene", "0",                 // iiwa7
+                "--obstacle_scene",
+                "0", // no obstacles
+                "--online_trajectory_time_step",
+                "0.1",
+                "--online_trajectory_duration",
+                "16.0",
+                "--store_trajectory", // save generated trajectories
+                "--acc_limit_factor",
+                "1.0",
+                "--jerk_limit_factor",
+                "1.0",
+                "--torque_limit_factor",
+                "1.0",
+                "--pos_limit_factor",
+                "1.0",
+                "--logging_level",
+                "INFO",
+                "--episodes",
+                "1200",
+                // "--plot_trajectory",                  // plot trajectories
+                // "--use_gui",
+                // "--spline_dir", "tracking/dataset/ur10/random_260112/train",
+            ]
+        },
+        {
+            "name": "Making Dataset",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "tracking/dataset/dataset_generator.py",
+            "console": "integratedTerminal",
+            "env": {
+                "DISPLAY": ":1"
+            },
+            "args": [
+                "--input_dir",
+                // "/home/astra/tracking_evaluation/TrackingEnv/random_agent/ur10",
+                "/home/astra/tracking_evaluation/TrackingEnv/random_agent/20260112T132839",
+                "--store_spline",
+                "--resampling_distance",
+                "0.05",
+                "--curvature_sampling_distance",
+                "0.05",
+                "--use_curvature_for_spline_resampling",
+                // "--use_gui",
+                // "--plot_spline",
+                // "--plot_trajectory",
+                "--visualize_spline",
+                "--visualize_trajectory",
+                // "--visualize_spline_no_reset",
+            ]
+        },
+        {
+            //python tracking/train.py --logdir=tracking_training --name=industrial_no_balancing_random --robot_scene=0 --online_trajectory_time_step=0.1 --hidden_layer_activation=swish --online_trajectory_time_step=0.1 --online_trajectory_duration=16.0 --obstacle_scene=0 --target_link_offset="[0, 0, 0.126]" --last_layer_activation=tanh --no_log_std_activation --use_controller_target_velocities --spline_dir=industrial/random/train --spline_u_arc_start_range="[0.0, 0.8]" --spline_u_arc_diff_min=0.2 --spline_normalize_duration --spline_termination_max_deviation=0.25 --obs_spline_n_next=7 --obs_spline_add_length --obs_spline_add_distance_per_knot --spline_distance_max_reward=2.0 --spline_deviation_max_threshold=0.25 --punish_spline_max_deviation --spline_max_deviation_max_punishment=0.9 --punish_spline_mean_deviation --spline_mean_deviation_max_punishment=0.9  --spline_deviation_weighting_factors="[1.0, 1.0, 1.0, 0.9, 0.8, 0.7, 0.6]"  --batch_size_factor=6.0 --spline_braking_extra_time_steps=0 --terminate_on_robot_stop --solver_iterations=50 --iterations_per_checkpoint=50  --time=500
+            "name": "Train KUKA",
+            "type": "python",
+            "request": "launch",
+            "program": "tracking/train.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--logdir", "tracking_training_kuka",
+
+                "--name", "kuka_random",
+                "--robot_scene", "0",
+
+                "--online_trajectory_time_step", "0.1",
+                "--hidden_layer_activation", "swish",
+                "--online_trajectory_duration", "16.0",
+                "--obstacle_scene", "0",
+
+                "--target_link_offset", "[0, 0, 0.126]",
+
+                "--last_layer_activation", "tanh",
+                "--no_log_std_activation",
+                "--use_controller_target_velocities",
+                "--spline_dir", "industrial/random/train",
+                
+                "--spline_u_arc_start_range", "[0.0, 0.8]",
+                "--spline_u_arc_diff_min", "0.2",
+                "--spline_normalize_duration",
+                "--spline_termination_max_deviation", "0.25",
+                "--obs_spline_n_next", "7",
+                "--obs_spline_add_length",
+                "--obs_spline_add_distance_per_knot",
+                "--spline_distance_max_reward", "2.0",
+                "--spline_deviation_max_threshold", "0.25",
+                "--punish_spline_max_deviation",
+                "--spline_max_deviation_max_punishment", "0.9",
+                "--punish_spline_mean_deviation",
+                "--spline_mean_deviation_max_punishment", "0.9",
+
+                "--spline_deviation_weighting_factors", "[1.0, 1.0, 1.0, 0.9, 0.8, 0.7, 0.6]",
+
+                "--batch_size_factor", "0.1",
+                "--spline_braking_extra_time_steps", "0",
+                "--terminate_on_robot_stop",
+                "--solver_iterations", "50",
+
+                "--iterations_per_checkpoint", "20",
+                
+                "--time", "500",
+
+                "--num_workers", 
+                "0",
+                "--num_gpus",
+                "1",
+            ]
+        },
+    ]
+}

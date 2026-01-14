@@ -17,7 +17,8 @@ from itertools import chain
 from pathlib import Path
 from threading import Thread
 
-import gym
+import gymnasium as gym
+# import gym
 import numpy as np
 import pybullet as p
 
@@ -529,7 +530,14 @@ class TrackingBase(gym.Env):
             p.setPhysicsEngineParameter(numSolverIterations=self._solver_iterations, physicsClientId=i)
             p.setTimeStep(self._simulation_time_step, physicsClientId=i)
 
-    def reset(self, spline_name=None):
+    def reset(self, seed=None, options=None, spline_name=None):
+        # gymnasium API: reset(seed=None, options=None)
+        # Handle seed if provided
+        if seed is not None:
+            self.set_seed(seed)
+        # Handle options if provided (may contain spline_name)
+        if options is not None and isinstance(options, dict):
+            spline_name = options.get('spline_name', spline_name)
         self._episode_counter += 1
         if self._episode_counter == 1 and self._gui_client_id is not None:
             p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1, physicsClientId=self._gui_client_id)
@@ -793,7 +801,11 @@ class TrackingBase(gym.Env):
                 self._brake = True  # slow down the robot prior to stopping the episode
                 done = False
 
-        return observation, reward, done, dict(info)
+        # gymnasium API: step() returns (observation, reward, terminated, truncated, info)
+        # Convert done to terminated and truncated
+        terminated = done
+        truncated = False  # This environment doesn't use truncation
+        return observation, reward, terminated, truncated, dict(info)
 
     def _execute_robot_movement(self, controller_setpoints):
         # executed in real-time if required
@@ -948,6 +960,24 @@ class TrackingBase(gym.Env):
         info.update(trajectory_length=self._trajectory_manager.trajectory_length)
         info.update(episode_length=self._episode_length)
         info['termination_reason'] = self._termination_reason
+        
+        # Add termination rate metrics to info for Ray RLlib to automatically aggregate
+        # These will appear in hist_stats and can be logged to TensorBoard
+        info['joint_limit_violation_termination_rate'] = 1.0 if self._termination_reason == self.TERMINATION_JOINT_LIMITS else 0.0
+        
+        if self._use_splines:
+            info['trajectory_length_termination_rate'] = 1.0 if self._termination_reason == self.TERMINATION_TRAJECTORY_LENGTH else 0.0
+            info['spline_length_termination_rate'] = 1.0 if self._termination_reason == self.TERMINATION_SPLINE_LENGTH else 0.0
+            info['spline_deviation_termination_rate'] = 1.0 if self._termination_reason == self.TERMINATION_SPLINE_DEVIATION else 0.0
+            info['robot_stopped_termination_rate'] = 1.0 if self._termination_reason == self.TERMINATION_ROBOT_STOPPED else 0.0
+        
+        if self._sphere_balancing_mode:
+            info['balancing_termination_rate'] = 1.0 if self._termination_reason == self.TERMINATION_BALANCING else 0.0
+        
+        if self._floating_robot_base:
+            info['robot_base_pos_deviation_termination_rate'] = 1.0 if self._termination_reason == self.TERMINATION_BASE_POS_DEVIATION else 0.0
+            info['robot_base_orn_deviation_termination_rate'] = 1.0 if self._termination_reason == self.TERMINATION_BASE_ORN_DEVIATION else 0.0
+            info['robot_base_z_angle_deviation_termination_rate'] = 1.0 if self._termination_reason == self.TERMINATION_BASE_Z_ANGLE_DEVIATION else 0.0
 
         logging.info("Termination reason: %s", self._termination_reason)
 

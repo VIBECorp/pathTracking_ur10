@@ -7,7 +7,8 @@ import logging
 from abc import ABC
 
 import numpy as np
-from gym.spaces import Box
+from gymnasium.spaces import Box
+# from gym.spaces import Box
 from klimits import normalize as normalize_array
 from tracking.envs.tracking_base import TrackingBase
 from tracking.utils.spline_utils import Spline
@@ -155,7 +156,8 @@ class TrackingObservation(ABC, TrackingBase):
             # reset control rate timer
             self._control_rate.reset()
 
-        return observation
+        # gymnasium API: reset() returns (observation, info)
+        return observation, observation_info
 
     def _prepare_for_next_action(self):
         super()._prepare_for_next_action()

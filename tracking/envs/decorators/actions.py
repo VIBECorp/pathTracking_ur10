@@ -7,7 +7,8 @@ import logging
 from abc import ABC
 
 import numpy as np
-from gym.spaces import Box
+from gymnasium.spaces import Box
+# from gym.spaces import Box
 from klimits import PosVelJerkLimitation
 from klimits import denormalize as denormalize
 from klimits import get_num_threads

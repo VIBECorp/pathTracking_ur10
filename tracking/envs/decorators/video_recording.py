@@ -11,7 +11,13 @@ import numpy as np
 from glob import glob
 from abc import ABC
 from PIL import Image, ImageDraw, ImageFont, ImageGrab
-from gym.wrappers.monitoring.video_recorder import VideoRecorder
+# gymnasium doesn't have VideoRecorder, use gym's VideoRecorder for compatibility
+try:
+    from gym.wrappers.monitoring.video_recorder import VideoRecorder
+except ImportError:
+    # Fallback: try to use gymnasium's RecordVideo wrapper (requires different usage)
+    # For now, raise an error to indicate the issue
+    raise ImportError("gym.VideoRecorder not available. Please install gym or adapt code to use gymnasium's RecordVideo wrapper.")
 from tracking.envs.tracking_base import TrackingBase
 
 RENDER_MODES = ["human", "rgb_array"]

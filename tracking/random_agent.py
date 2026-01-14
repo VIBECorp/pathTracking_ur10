@@ -146,6 +146,7 @@ if __name__ == '__main__':
 
     robot_scene = args.robot_scene
     # 0: one iiwa robot, 1: two iiwa robots, 2: three iiwa robots, 3: armar6, 4: armar6_continuous, 5: armar6_4
+    # 6: armar4 with fixed hands and legs, 7: armar4 with fixed hands, 8: ur10
 
     if robot_scene == 0:
         num_joints = 7
@@ -161,6 +162,8 @@ if __name__ == '__main__':
         num_joints = 18
     elif robot_scene == 7:  # armar 4 with fixed hands
         num_joints = 30
+    elif robot_scene == 8:  # ur10
+        num_joints = 6
     else:
         raise ValueError("robot_scene " + str(robot_scene) + " not defined")
 
@@ -247,6 +250,11 @@ if __name__ == '__main__':
         target_link_name = "hand_fixed"
         # name of the target link for target point reaching
         target_link_offset = [0.03, 0, 0.135]
+        # relative offset between the frame of the target link and the target link point
+    elif robot_scene == 8:  # ur10
+        target_link_name = "wrist_3_link"
+        # name of the target link for target point reaching
+        target_link_offset = [0, 0, 0]
         # relative offset between the frame of the target link and the target link point
     else:
         target_link_name = "arm_wri2"

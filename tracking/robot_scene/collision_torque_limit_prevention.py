@@ -142,6 +142,10 @@ class ObstacleWrapperBase:
             self._starting_point_cartesian_range = [[-0.6, 0.6], [-0.8, 0.8],
                                                     [0.1, 1]]  # [[x_min, x_max], [y_min, y_max], [z_min, z_max]]
             self._target_point_relative_pos_min_max = np.array([[-1.6, -2, -1.5], [1.6, 2, 1.5]])
+        elif self._robot_scene.robot_name == "ur10":
+            self._starting_point_cartesian_range = [[-0.6, 0.6], [-0.8, 0.8],
+                                                    [0.1, 1]]  # [[x_min, x_max], [y_min, y_max], [z_min, z_max]]
+            self._target_point_relative_pos_min_max = np.array([[-1.6, -2, -1.5], [1.6, 2, 1.5]])
         elif self._robot_scene.robot_name.startswith("armar6"):
             if self._robot_scene.robot_name == "armar6":
                 self._starting_point_cartesian_range = [[-0.1, 0.75], [-1.1, 1.1],
@@ -408,6 +412,11 @@ class ObstacleWrapperSim(ObstacleWrapperBase):
             closest_point_active_link_name_list = ["iiwa_link_2", "iiwa_link_3", "iiwa_link_4", "iiwa_link_5",
                                                    "iiwa_link_6", "iiwa_link_7"]
 
+            closest_point_active_link_name_multiple_robots_list = self._robot_scene.get_link_names_for_multiple_robots(
+                closest_point_active_link_name_list)
+        elif self._robot_scene.robot_name == "ur10":
+            closest_point_active_link_name_list = ["upper_arm_link", "forearm_link", "wrist_1_link",
+                                                   "wrist_2_link", "wrist_3_link", "tool0"]
             closest_point_active_link_name_multiple_robots_list = self._robot_scene.get_link_names_for_multiple_robots(
                 closest_point_active_link_name_list)
         elif self._robot_scene.robot_name.startswith("armar6"):

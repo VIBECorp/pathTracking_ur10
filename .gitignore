@@ -2,6 +2,8 @@ __pycache__/
 .idea/
 dist/
 build/
+tracking_training_kuka/
+tracking_training_ur10/
 
 *.pyc
 *.wrl
