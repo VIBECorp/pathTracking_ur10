@@ -215,14 +215,23 @@ class FullyConnectedNetworkLastLayerActivation(TorchModelV2, nn.Module):
 
     def forward(self, input_dict: Dict[str, TensorType], state: List[TensorType], seq_lens: TensorType):
         obs = input_dict[SampleBatch.OBS]
+        # Handle tuple input (Ray 2.x may pass tuple)
+        if isinstance(obs, tuple):
+            obs = obs[0]  # Take first element if tuple
         if isinstance(obs, np.ndarray):
             obs = torch.from_numpy(obs).float()
+        # Ensure obs is a tensor, not tuple
+        if isinstance(obs, tuple):
+            obs = torch.tensor(obs[0]).float() if len(obs) > 0 else obs[0]
 
         # Action network forward pass
         x = obs
         intermediate_outputs = []
         
         for i, layer in enumerate(self._action_layers):
+            # Ensure x is a tensor before passing to layer
+            if isinstance(x, tuple):
+                x = x[0]
             x = layer(x)
             if self._output_intermediate_layers and i < len(self._action_layers) - 1:
                 intermediate_outputs.append(x)

@@ -1113,8 +1113,8 @@ if __name__ == '__main__':
     # Ensure num_env_runners is set explicitly (Ray 2.x requirement)
     # Ray 2.x: num_workers is removed, only num_env_runners exists
     # num_env_runners=0 means local worker only (no remote workers)
-    # num_env_runners = max(config.get('num_env_runners', config.get('num_workers', 1)), 0)
-    num_env_runners = 0
+    num_env_runners = max(config.get('num_env_runners', config.get('num_workers', 1)), 0)
+    # num_env_runners = 0
     
     # Set num_env_runners using the config method (preferred way)
     algo_config.num_env_runners = num_env_runners

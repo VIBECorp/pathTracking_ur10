@@ -17,11 +17,11 @@ import time
 import errno
 import logging
 import numpy as np
-from ray.rllib import rollout
 from ray import tune
 from pathlib import Path
 from ray.rllib.env import BaseEnv
-from ray.rllib.evaluation import MultiAgentEpisode, RolloutWorker
+from ray.rllib.env.multi_agent_episode import MultiAgentEpisode
+from ray.rllib.evaluation.rollout_worker import RolloutWorker
 from ray.rllib.policy import Policy
 from ray.rllib.policy.sample_batch import SampleBatch
 from ray.rllib.utils.typing import AgentID, PolicyID
@@ -158,7 +158,183 @@ def store_metrics(base_dir, real_robot, pid, episode_counter, reward_total, last
 
 
 def rollout_multiple_workers():
-    remote_workers = agent.workers.remote_workers()
+    # Ray 2.x: Try to access env_runner_group directly first
+    remote_workers = None
+    
+    # Try 1: env_runner_group (Ray 2.x primary way)
+    if hasattr(agent, 'env_runner_group'):
+        try:
+            env_runner_group = agent.env_runner_group
+            print(f"env_runner_group type: {type(env_runner_group)}")
+            print(f"env_runner_group attributes: {[attr for attr in dir(env_runner_group) if not attr.startswith('__')][:30]}")
+            
+            # Try _worker_manager first (Ray 2.x uses this)
+            if hasattr(env_runner_group, '_worker_manager'):
+                worker_manager = env_runner_group._worker_manager
+                print(f"_worker_manager type: {type(worker_manager)}")
+                print(f"_worker_manager attributes: {[attr for attr in dir(worker_manager) if not attr.startswith('__')][:20]}")
+                
+                # Try to get remote workers from worker_manager
+                # FaultTolerantActorManager uses 'actors' property
+                if hasattr(worker_manager, 'actors'):
+                    actors_attr = getattr(worker_manager, 'actors')
+                    if callable(actors_attr):
+                        actors = actors_attr()
+                    else:
+                        actors = actors_attr
+                    # actors is a dict mapping actor_id to actor handle
+                    if isinstance(actors, dict):
+                        remote_workers = list(actors.values())
+                        print(f"Found remote_workers via _worker_manager.actors: {type(remote_workers)}, count: {len(remote_workers)}")
+                    elif isinstance(actors, list):
+                        remote_workers = actors
+                        print(f"Found remote_workers via _worker_manager.actors (list): {type(remote_workers)}, count: {len(remote_workers)}")
+                elif hasattr(worker_manager, 'actor_ids'):
+                    # Try to get actors by IDs
+                    actor_ids = worker_manager.actor_ids
+                    if isinstance(actor_ids, list) and len(actor_ids) > 0:
+                        # Get actors from IDs
+                        remote_workers = [worker_manager._actors.get(actor_id) for actor_id in actor_ids if actor_id in worker_manager._actors]
+                        remote_workers = [w for w in remote_workers if w is not None]
+                        print(f"Found remote_workers via _worker_manager.actor_ids: {type(remote_workers)}, count: {len(remote_workers)}")
+                elif hasattr(worker_manager, '_actors'):
+                    actors_dict = worker_manager._actors
+                    if isinstance(actors_dict, dict):
+                        remote_workers = list(actors_dict.values())
+                        print(f"Found remote_workers via _worker_manager._actors: {type(remote_workers)}, count: {len(remote_workers)}")
+                elif hasattr(worker_manager, 'remote_workers'):
+                    remote_workers_attr = getattr(worker_manager, 'remote_workers')
+                    if callable(remote_workers_attr):
+                        remote_workers = remote_workers_attr()
+                    else:
+                        remote_workers = remote_workers_attr
+                    print(f"Found remote_workers via _worker_manager.remote_workers: {type(remote_workers)}, count: {len(remote_workers) if remote_workers else 0}")
+                elif hasattr(worker_manager, '_remote_workers'):
+                    remote_workers = worker_manager._remote_workers
+                    print(f"Found remote_workers via _worker_manager._remote_workers: {type(remote_workers)}, count: {len(remote_workers) if remote_workers else 0}")
+            
+            # Fallback: try direct attributes on env_runner_group
+            if remote_workers is None:
+                if hasattr(env_runner_group, 'remote_workers'):
+                    remote_workers_attr = getattr(env_runner_group, 'remote_workers')
+                    if callable(remote_workers_attr):
+                        remote_workers = remote_workers_attr()
+                    else:
+                        remote_workers = remote_workers_attr
+                    print(f"Found remote_workers via env_runner_group.remote_workers: {type(remote_workers)}")
+                elif hasattr(env_runner_group, '_remote_env_runners'):
+                    remote_workers = env_runner_group._remote_env_runners
+                    print(f"Found remote_workers via env_runner_group._remote_env_runners: {type(remote_workers)}")
+                elif hasattr(env_runner_group, 'remote_env_runners'):
+                    remote_workers_attr = getattr(env_runner_group, 'remote_env_runners')
+                    if callable(remote_workers_attr):
+                        remote_workers = remote_workers_attr()
+                    else:
+                        remote_workers = remote_workers_attr
+                    print(f"Found remote_workers via env_runner_group.remote_env_runners: {type(remote_workers)}")
+        except Exception as e:
+            print(f"Failed to get remote_workers from env_runner_group: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Try 2: workers (legacy API, but might work)
+    if remote_workers is None:
+        try:
+            # Try to access workers as property (not method)
+            workers_obj = agent.workers
+            print(f"workers_obj type: {type(workers_obj)}")
+            
+            # Only try to access if it's not a method
+            if not isinstance(workers_obj, type(lambda: None)):
+                print(f"workers_obj attributes: {[attr for attr in dir(workers_obj) if not attr.startswith('__')][:30]}")
+                
+                if hasattr(workers_obj, 'remote_workers'):
+                    remote_workers_attr = getattr(workers_obj, 'remote_workers')
+                    if callable(remote_workers_attr):
+                        remote_workers = remote_workers_attr()
+                    else:
+                        remote_workers = remote_workers_attr
+                    print(f"Found remote_workers via workers.remote_workers: {type(remote_workers)}")
+                elif hasattr(workers_obj, '_remote_workers'):
+                    remote_workers = workers_obj._remote_workers
+                    print(f"Found remote_workers via workers._remote_workers: {type(remote_workers)}")
+        except Exception as e:
+            print(f"Failed to get remote_workers from workers: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    if remote_workers is None:
+        # Last resort: print all attributes for debugging
+        print(f"agent type: {type(agent)}")
+        print(f"agent attributes: {[attr for attr in dir(agent) if not attr.startswith('__') and 'worker' in attr.lower() or 'env' in attr.lower()][:30]}")
+        raise AttributeError(f"Cannot find remote_workers in agent")
+    
+    # Check if remote_workers is empty (num_env_runners=0 means no remote workers)
+    if not remote_workers or len(remote_workers) == 0:
+        print(f"Warning: remote_workers is empty (num_env_runners=0). Falling back to single worker mode.")
+        # Fall back to single worker mode
+        # Use env_runner_group to get local worker (same as in main code)
+        if hasattr(agent, 'env_runner_group'):
+            env_runner_group = agent.env_runner_group
+            if hasattr(env_runner_group, '_local_env_runner'):
+                local_worker = env_runner_group._local_env_runner
+            else:
+                raise ValueError("Cannot find _local_env_runner in env_runner_group")
+        else:
+            # Fallback: try agent.workers
+            workers_obj = agent.workers
+            if hasattr(workers_obj, '_local_env_runner'):
+                local_worker = workers_obj._local_env_runner
+            elif hasattr(workers_obj, 'local_worker'):
+                if callable(workers_obj.local_worker):
+                    local_worker = workers_obj.local_worker()
+                else:
+                    local_worker = workers_obj.local_worker
+            else:
+                raise ValueError("Cannot find local worker for single worker mode")
+        
+        # Get env from local_worker
+        # local_worker might be an EnvRunner, so get env from it
+        if hasattr(local_worker, 'env'):
+            local_env = local_worker.env
+            # If env is a list (vectorized), get the first one
+            if isinstance(local_env, list) and len(local_env) > 0:
+                local_env = local_env[0]
+        elif hasattr(local_worker, 'envs') and isinstance(local_worker.envs, list) and len(local_worker.envs) > 0:
+            local_env = local_worker.envs[0]
+        else:
+            raise ValueError("Cannot find env in local_worker")
+        
+        # Unwrap gymnasium wrappers if needed
+        while hasattr(local_env, 'env') or hasattr(local_env, 'unwrapped'):
+            if hasattr(local_env, 'envs') and isinstance(local_env.envs, list) and len(local_env.envs) > 0:
+                local_env = local_env.envs[0]
+            elif hasattr(local_env, 'env'):
+                local_env = local_env.env
+                if isinstance(local_env, list) and len(local_env) > 0:
+                    local_env = local_env[0]
+            elif hasattr(local_env, 'unwrapped'):
+                local_env = local_env.unwrapped
+            else:
+                break
+            # Stop if we've reached the actual TrackingBase environment
+            if hasattr(local_env, 'TERMINATION_JOINT_LIMITS'):
+                break
+        
+        # Set global env variable for rollout_single_worker_manually()
+        global env
+        env = local_env
+        
+        if args.store_metrics:
+            make_metrics_dir(env.evaluation_dir, args.use_real_robot)
+        if args.store_network_data:
+            make_network_data_dir(env.evaluation_dir, args.use_real_robot)
+        if args.store_trajectory:
+            store_env_config(env.evaluation_dir, args.config["env_config"])
+        # Use single worker rollout instead
+        rollout_single_worker_manually()
+        return
+    
     if args.store_metrics or args.store_network_data or args.store_trajectory:
         evaluation_dir = ray.get(remote_workers[0].foreach_env.remote(lambda env: env.evaluation_dir))[0]
         if args.store_metrics:
@@ -204,26 +380,64 @@ def rollout_single_worker_manually():
         while not done:
             steps = steps + 1
             if args.store_network_data:
-                network_data = agent.compute_action(obs, full_fetch=True)
-                action = network_data[0]
+                # Ray 2.x: For single agent, use compute_single_action
+                # compute_single_action returns (action, state_out, info) tuple
+                # Check if full_fetch is supported
+                try:
+                    result = agent.compute_single_action(obs, full_fetch=True)
+                    if isinstance(result, tuple) and len(result) >= 3:
+                        action, state_out, info = result
+                    else:
+                        # If full_fetch doesn't work, try without it
+                        action = result
+                        state_out = None
+                        info = {}
+                except TypeError:
+                    # full_fetch might not be supported, try without it
+                    action = agent.compute_single_action(obs)
+                    state_out = None
+                    info = {}
+                
+                network_data = (action, state_out, info)
                 network_data[2]['action'] = action  # add action to extra_outs
                 network_data[2]['observation'] = obs
                 network_data_list.append(network_data[2])
             else:
-                action = agent.compute_action(obs, full_fetch=False)
+                # Ray 2.x: For single agent, use compute_single_action
+                action = agent.compute_single_action(obs)
             if args.store_metrics:
                 if not episode_info:
                     for op in METRIC_OPS:
                         episode_info[op] = defaultdict(list)
 
-                next_obs, reward, done, info = env.step(action)
+                # Gymnasium API: step() returns (obs, reward, terminated, truncated, info) or (obs, reward, done, info)
+                step_result = env.step(action)
+                if len(step_result) == 5:
+                    # Gymnasium new API: (obs, reward, terminated, truncated, info)
+                    next_obs, reward, terminated, truncated, info = step_result
+                    done = terminated or truncated
+                elif len(step_result) == 4:
+                    # Old API: (obs, reward, done, info)
+                    next_obs, reward, done, info = step_result
+                else:
+                    raise ValueError(f"Unexpected step() return value: {step_result}")
 
                 for op in list(episode_info.keys() & METRIC_OPS):
                     for k, v in info[op].items():
                         episode_info[op][k].append(v)
 
             else:
-                next_obs, reward, done, _ = env.step(action)
+                # Gymnasium API: step() returns (obs, reward, terminated, truncated, info) or (obs, reward, done, info)
+                step_result = env.step(action)
+                if len(step_result) == 5:
+                    # Gymnasium new API: (obs, reward, terminated, truncated, info)
+                    next_obs, reward, terminated, truncated, _ = step_result
+                    done = terminated or truncated
+                elif len(step_result) == 4:
+                    # Old API: (obs, reward, done, info)
+                    next_obs, reward, done, _ = step_result
+                else:
+                    raise ValueError(f"Unexpected step() return value: {step_result}")
 
             reward_total += reward
             obs = next_obs
@@ -372,16 +586,30 @@ if __name__ == '__main__':
     else:
         checkpoint_path = args.checkpoint
 
+    # Check if this is Ray RLlib 2.x format (PyTorch) or old format (TensorFlow)
+    is_ray2x_format = False
     if os.path.isdir(checkpoint_path):
-        if os.path.basename(checkpoint_path) == "checkpoint":
-            checkpoint_path = os.path.join(checkpoint_path, "checkpoint")
+        # Ray RLlib 2.x format: checkpoint directory contains rllib_checkpoint.json
+        rllib_checkpoint_json = os.path.join(checkpoint_path, "rllib_checkpoint.json")
+        if os.path.isfile(rllib_checkpoint_json):
+            is_ray2x_format = True
+            # For Ray 2.x, use the directory path directly
+            # params.json is in the parent directory
+            params_dir = os.path.dirname(checkpoint_path)
         else:
-            checkpoint_path = os.path.join(checkpoint_path, "checkpoint", "checkpoint")
+            # Old format: look for checkpoint file inside directory
+            if os.path.basename(checkpoint_path) == "checkpoint":
+                checkpoint_path = os.path.join(checkpoint_path, "checkpoint")
+            else:
+                checkpoint_path = os.path.join(checkpoint_path, "checkpoint", "checkpoint")
+            params_dir = os.path.dirname(os.path.dirname(checkpoint_path))
+    else:
+        # checkpoint_path is a file (old format)
+        params_dir = os.path.dirname(os.path.dirname(checkpoint_path))
 
-    if not os.path.isfile(checkpoint_path):
+    if not is_ray2x_format and not os.path.isfile(checkpoint_path):
         raise ValueError("Could not find checkpoint {}".format(checkpoint_path))
 
-    params_dir = os.path.dirname(os.path.dirname(checkpoint_path))
     params_path = os.path.join(params_dir, "params.json")
 
     with open(params_path) as params_file:
@@ -609,12 +837,18 @@ if __name__ == '__main__':
     if args.no_exploration:
         checkpoint_config['explore'] = False
 
+    # Register custom models BEFORE algorithm initialization (Ray 2.x requirement)
     if 'custom_model' in checkpoint_config['model']:
-        from ray.rllib.models import ModelCatalog
-        if checkpoint_config['model']['custom_model'] == 'fcnet_last_layer_activation':
+        from ray.rllib.models.catalog import ModelCatalog
+        custom_model_name = checkpoint_config['model']['custom_model']
+        
+        if custom_model_name == 'fcnet_last_layer_activation':
             from tracking.model.fcnet_v2_last_layer_activation import FullyConnectedNetworkLastLayerActivation
             ModelCatalog.register_custom_model('fcnet_last_layer_activation', FullyConnectedNetworkLastLayerActivation)
-        if checkpoint_config['model']['custom_model'] == 'keras_fcnet_last_layer_activation':
+        elif custom_model_name == 'torch_fcnet_last_layer_activation':
+            from tracking.model.torch_fcnet_last_layer_activation import FullyConnectedNetworkLastLayerActivation
+            ModelCatalog.register_custom_model('torch_fcnet_last_layer_activation', FullyConnectedNetworkLastLayerActivation)
+        elif custom_model_name == 'keras_fcnet_last_layer_activation':
             from tracking.model.keras_fcnet_last_layer_activation import FullyConnectedNetworkLastLayerActivation
             ModelCatalog.register_custom_model('keras_fcnet_last_layer_activation',
                                                FullyConnectedNetworkLastLayerActivation)
@@ -622,6 +856,7 @@ if __name__ == '__main__':
                         'no_final_layer', 'vf_share_layers', 'free_log_std']:
                 if key in checkpoint_config['model'] and key not in checkpoint_config['model']['custom_model_config']:
                     checkpoint_config['model']['custom_model_config'][key] = checkpoint_config['model'][key]
+        
         if 'custom_options' in checkpoint_config['model']:
             checkpoint_config['model']['custom_model_config'] = checkpoint_config['model']['custom_options']
             del checkpoint_config['model']['custom_options']
@@ -681,7 +916,8 @@ if __name__ == '__main__':
                 store_network_data(env.evaluation_dir, env.use_real_robot, env.pid, env.episode_counter, reward_total,
                                    episode.user_data['network_data_list'])
 
-        def on_train_result(self, *, trainer, result: dict, **kwargs):
+        def on_train_result(self, *, algorithm, result: dict, **kwargs):
+            # Ray 2.x: 'trainer' parameter renamed to 'algorithm'
             pass
 
         def on_postprocess_trajectory(
@@ -713,12 +949,144 @@ if __name__ == '__main__':
 
     ray.init(dashboard_host="127.0.0.1", include_dashboard=args.use_dashboard, ignore_reinit_error=True,
              num_gpus=args.num_gpus)
-    cls = rollout.get_trainable_cls(args.run)
-    agent = cls(env=args.env, config=args.config)
+    
+    # Re-register custom models AFTER ray.init() so workers can access them
+    if 'custom_model' in checkpoint_config['model']:
+        from ray.rllib.models.catalog import ModelCatalog
+        custom_model_name = checkpoint_config['model']['custom_model']
+        
+        if custom_model_name == 'fcnet_last_layer_activation':
+            from tracking.model.fcnet_v2_last_layer_activation import FullyConnectedNetworkLastLayerActivation
+            ModelCatalog.register_custom_model('fcnet_last_layer_activation', FullyConnectedNetworkLastLayerActivation)
+        elif custom_model_name == 'torch_fcnet_last_layer_activation':
+            from tracking.model.torch_fcnet_last_layer_activation import FullyConnectedNetworkLastLayerActivation
+            ModelCatalog.register_custom_model('torch_fcnet_last_layer_activation', FullyConnectedNetworkLastLayerActivation)
+        elif custom_model_name == 'keras_fcnet_last_layer_activation':
+            from tracking.model.keras_fcnet_last_layer_activation import FullyConnectedNetworkLastLayerActivation
+            ModelCatalog.register_custom_model('keras_fcnet_last_layer_activation',
+                                               FullyConnectedNetworkLastLayerActivation)
+    
+    # Ray 2.x: Import algorithm class directly instead of using rollout.get_trainable_cls
+    if args.run == "PPO":
+        from ray.rllib.algorithms import ppo
+        algo_class = ppo.PPO
+    else:
+        raise ValueError(f"Unsupported algorithm: {args.run}")
+    
+    # Ray 2.x: Use AlgorithmConfig to properly configure the algorithm
+    # Instead of using update_from_dict (which may reintroduce problematic keys),
+    # manually set only the necessary config values directly
+    algo_config = algo_class.get_default_config()
+    
+    # Set environment first
+    algo_config.environment(args.env)
+    
+    # Set env_config if present
+    if 'env_config' in args.config:
+        algo_config.env_config = args.config['env_config']
+    
+    # Set model config if present
+    if 'model' in args.config:
+        model_config = args.config['model']
+        if isinstance(model_config, dict):
+            # Set model parameters individually to avoid problematic keys
+            if 'custom_model' in model_config:
+                algo_config.model['custom_model'] = model_config['custom_model']
+            if 'custom_model_config' in model_config:
+                algo_config.model['custom_model_config'] = model_config['custom_model_config']
+            if 'fcnet_hiddens' in model_config:
+                algo_config.model['fcnet_hiddens'] = model_config['fcnet_hiddens']
+            if 'fcnet_activation' in model_config:
+                algo_config.model['fcnet_activation'] = model_config['fcnet_activation']
+            if 'use_lstm' in model_config:
+                algo_config.model['use_lstm'] = model_config['use_lstm']
+            if 'conv_filters' in model_config:
+                algo_config.model['conv_filters'] = model_config['conv_filters']
+    
+    # Set PPO-specific parameters if present
+    if args.run == "PPO":
+        if 'gamma' in args.config:
+            algo_config.gamma = args.config['gamma']
+        if 'lambda' in args.config:
+            algo_config.lambda_ = args.config['lambda']
+        if 'kl_coeff' in args.config:
+            algo_config.kl_coeff = args.config['kl_coeff']
+        if 'kl_target' in args.config:
+            algo_config.kl_target = args.config['kl_target']
+        if 'lr' in args.config:
+            algo_config.lr = args.config['lr']
+        if 'lr_schedule' in args.config:
+            algo_config.lr_schedule = args.config['lr_schedule']
+        if 'num_sgd_iter' in args.config:
+            algo_config.num_sgd_iter = args.config['num_sgd_iter']
+        if 'sgd_minibatch_size' in args.config:
+            algo_config.sgd_minibatch_size = args.config['sgd_minibatch_size']
+        if 'train_batch_size' in args.config:
+            algo_config.train_batch_size = args.config['train_batch_size']
+        if 'rollout_fragment_length' in args.config:
+            algo_config.rollout_fragment_length = args.config['rollout_fragment_length']
+        if 'vf_clip_param' in args.config:
+            algo_config.vf_clip_param = args.config['vf_clip_param']
+        if 'vf_loss_coeff' in args.config:
+            algo_config.vf_loss_coeff = args.config['vf_loss_coeff']
+        if 'use_gae' in args.config:
+            algo_config.use_gae = args.config['use_gae']
+    
+    # Set general parameters
+    if 'normalize_actions' in args.config:
+        algo_config.normalize_actions = args.config['normalize_actions']
+    if 'num_gpus' in args.config:
+        algo_config.num_gpus = args.config['num_gpus']
+    
+    # Set num_env_runners: Use args.num_workers for evaluation (override checkpoint config)
+    # Evaluation typically uses num_workers=0 (local worker only)
+    num_env_runners = args.num_workers if args.num_workers is not None else 0
+    algo_config.num_env_runners = num_env_runners
+    algo_config.num_learners = 0
+    algo_config.simple_optimizer = True
+    algo_config._disable_execution_plan_api = True
+    
+    # Ray 2.x: Disable new API stack to use legacy custom_model API
+    algo_config.api_stack(enable_rl_module_and_learner=False)
+    algo_config.experimental(_validate_config=False)
+    algo_config.enable_env_runner_and_connector_v2 = False
+    
+    # Fix policy_mapping_fn: must be None or callable (Ray 2.x requirement)
+    if 'policy_mapping_fn' in args.config:
+        policy_mapping_fn = args.config['policy_mapping_fn']
+        if policy_mapping_fn is not None and not callable(policy_mapping_fn):
+            algo_config.multi_agent(policy_mapping_fn=None)
+        elif policy_mapping_fn is None:
+            algo_config.multi_agent(policy_mapping_fn=None)
+    else:
+        algo_config.multi_agent(policy_mapping_fn=None)
+    
+    # Set callbacks
+    algo_config.callbacks(CustomEvaluationCallbacks)
+    
+    # Ray 2.x: Use build_algo() method (build() is deprecated)
+    agent = algo_config.build_algo()
     agent.restore(checkpoint_path)
 
-    if checkpoint_config['num_workers'] == 0:
-        env = agent.workers.local_worker().env
+    # Ray 2.x: Check num_env_runners or num_workers for compatibility
+    num_workers_value = checkpoint_config.get('num_env_runners', checkpoint_config.get('num_workers', 0))
+    if num_workers_value == 0:
+        # Ray 2.x: workers is a property, not a method
+        workers_obj = agent.workers
+        
+        # Get local worker
+        if hasattr(workers_obj, 'local_worker'):
+            # local_worker might be a method or property
+            if callable(workers_obj.local_worker):
+                local_worker = workers_obj.local_worker()
+            else:
+                local_worker = workers_obj.local_worker
+        elif hasattr(workers_obj, '_local_env_runner'):
+            local_worker = workers_obj._local_env_runner
+        else:
+            raise AttributeError("Cannot find local_worker in agent.workers")
+        
+        env = local_worker.env
         if args.store_metrics:
             make_metrics_dir(env.evaluation_dir, args.use_real_robot)
         if args.store_network_data:

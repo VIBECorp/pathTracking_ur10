@@ -167,7 +167,7 @@
 
                 "--spline_deviation_weighting_factors", "[1.0, 1.0, 1.0, 0.9, 0.8, 0.7, 0.6]",
 
-                "--batch_size_factor", "0.1",
+                "--batch_size_factor", "0.3",
                 "--spline_braking_extra_time_steps", "0",
                 "--terminate_on_robot_stop",
                 "--solver_iterations", "50",
@@ -177,9 +177,41 @@
                 "--time", "500",
 
                 "--num_workers", 
-                "0",
+                "10",
                 "--num_gpus",
                 "1",
+            ]
+        },
+
+        {
+            "name": "Eval with provided sample",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "tracking/evaluate.py",
+            "console": "integratedTerminal",
+            "env": {
+                "DISPLAY": ":1"
+            },
+            "args": [
+                "--store_trajectory",
+                "--checkpoint",
+                "/home/vibe-thor/Git/pathTracking_ur10/tracking_training_kuka/tracking_training_kuka/kuka_random/PPO_TrackingEnvSpline_13c1e_00000_0_2026-01-14_19-02-04/checkpoint_000050",
+                // "industrial/no_balancing/random",
+                // "/home/gpu/ray_results/tracking_training/industrial_no_balancing_random/PPO_TrackingEnvSpline_2f17e_00000_0_2026-01-12_09-54-01/checkpoint_000020",
+                "--episodes",
+                "100",
+                "--num_workers",
+                "0",
+                "--spline_dir",
+                "tracking/dataset/industrial/random/test",
+                // "--spline_name_list",
+                // "[\"episode_56_18164.json\"]",
+                "--store_metrics",
+                // "--store_trajectory",
+                "--logging_level",
+                "INFO",
+                "--plot_spline",
+                "--use_gui"
             ]
         },
     ]

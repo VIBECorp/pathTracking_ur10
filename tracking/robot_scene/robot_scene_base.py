@@ -553,9 +553,15 @@ class RobotSceneBase(object):
         if manip_joint_indices is None:
             manip_joint_indices = self.manip_joint_indices
 
-        joint_states = p.getJointStates(self._robot_id, manip_joint_indices, physicsClientId=physics_client_id)
-        actual_torques = np.asarray([joint_state[3] for joint_state in joint_states])
-        return actual_torques
+        try:
+            joint_states = p.getJointStates(self._robot_id, manip_joint_indices, physicsClientId=physics_client_id)
+            actual_torques = np.asarray([joint_state[3] for joint_state in joint_states])
+            return actual_torques
+        except p.error as e:
+            # Handle case where robot is removed from simulation or invalid state
+            logging.warning("Failed to get joint states (robot may be removed from simulation): %s. Returning zero torques.", e)
+            # Return zero torques as fallback
+            return np.zeros(len(manip_joint_indices))
 
     def _deactivate_self_collision_for_adjoining_links(self):
         # deactivate erroneous self-collisions resulting from inaccurate collision meshes
