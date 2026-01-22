@@ -142,6 +142,10 @@ class ObstacleWrapperBase:
             self._starting_point_cartesian_range = [[-0.6, 0.6], [-0.8, 0.8],
                                                     [0.1, 1]]  # [[x_min, x_max], [y_min, y_max], [z_min, z_max]]
             self._target_point_relative_pos_min_max = np.array([[-1.6, -2, -1.5], [1.6, 2, 1.5]])
+        elif self._robot_scene.robot_name == "ur10":
+            self._starting_point_cartesian_range = [[-0.6, 0.6], [-0.8, 0.8],
+                                                    [0.1, 1]]  # [[x_min, x_max], [y_min, y_max], [z_min, z_max]]
+            self._target_point_relative_pos_min_max = np.array([[-1.6, -2, -1.5], [1.6, 2, 1.5]])
         elif self._robot_scene.robot_name.startswith("armar6"):
             if self._robot_scene.robot_name == "armar6":
                 self._starting_point_cartesian_range = [[-0.1, 0.75], [-1.1, 1.1],
@@ -410,6 +414,11 @@ class ObstacleWrapperSim(ObstacleWrapperBase):
 
             closest_point_active_link_name_multiple_robots_list = self._robot_scene.get_link_names_for_multiple_robots(
                 closest_point_active_link_name_list)
+        elif self._robot_scene.robot_name == "ur10":
+            closest_point_active_link_name_list = ["upper_arm_link", "forearm_link", "wrist_1_link",
+                                                   "wrist_2_link", "wrist_3_link", "tool0"]
+            closest_point_active_link_name_multiple_robots_list = self._robot_scene.get_link_names_for_multiple_robots(
+                closest_point_active_link_name_list)
         elif self._robot_scene.robot_name.startswith("armar6"):
             closest_point_active_link_name_list = ["arm_t34", "arm_t45", "arm_t56", "arm_t67",
                                                    "arm_t78", "arm_t8", "hand_fixed"]
@@ -427,6 +436,19 @@ class ObstacleWrapperSim(ObstacleWrapperBase):
                                                  flags=p.VISUAL_SHAPE_DATA_TEXTURE_UNIQUE_IDS)
         visualize_target_link_point = False  # bounding sphere around the target link point
 
+        # Create a mapping from link index to visual shape data color
+        visual_shape_color_map = {}
+        for visual_shape in visual_shape_data:
+            link_index = visual_shape[1]  # linkIndex is at index 1
+            rgba_color = visual_shape[7]  # rgbaColor is at index 7
+            if link_index not in visual_shape_color_map:
+                visual_shape_color_map[link_index] = rgba_color
+
+        if self._use_target_points or self._use_splines:
+            logging.info("Target link name: {}, use_target_points: {}, use_splines: {}".format(
+                self._target_link_name, self._use_target_points, self._use_splines))
+            logging.info("Link name list: {}".format(link_name_list))
+
         for i in range(len(link_name_list)):
             observed_points = self._specify_observed_points(link_name=link_name_list[i], link_index=i)
             self_collision_links = self._specify_self_collision_links(link_name=link_name_list[i],
@@ -436,15 +458,22 @@ class ObstacleWrapperSim(ObstacleWrapperBase):
             else:
                 closest_point_active = False
 
-            # link default color
-            default_color = visual_shape_data[i][7]
+            # link default color - use actual link index
+            actual_link_index = self._robot_scene.get_link_index_from_link_name(link_name_list[i])
+            if actual_link_index >= 0 and actual_link_index in visual_shape_color_map:
+                default_color = visual_shape_color_map[actual_link_index]
+            else:
+                default_color = [0.9, 0.9, 0.9, 1]  # default gray color
 
             if self._use_target_points or self._use_splines:
                 for j in range(self._robot_scene.num_robots):
-                    if link_name_list[i] == self._robot_scene.get_link_names_for_multiple_robots(self._target_link_name,
-                                                                                                 robot_indices=[j])[0]:
+                    target_link_name_for_robot = self._robot_scene.get_link_names_for_multiple_robots(self._target_link_name,
+                                                                                                       robot_indices=[j])[0]
+                    if link_name_list[i] == target_link_name_for_robot:
                         robot_index = j if self._target_point_sequence != TARGET_POINT_SINGLE else 0
                         default_color = self.get_target_point_color(robot=robot_index, transparency=1.0)
+                        logging.warning("Setting target link color GREEN: link_name_list[{}]={}, target_link_name={}, target_link_name_for_robot={}, robot_index={}".format(
+                            i, link_name_list[i], self._target_link_name, target_link_name_for_robot, robot_index))
 
             self._links.append(
                 LinkBase(name=link_name_list[i], observe_closest_point=True, closest_point_active=closest_point_active,

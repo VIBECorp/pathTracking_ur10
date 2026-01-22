@@ -569,7 +569,7 @@ if __name__ == '__main__':
             'config': config,
             'checkpoint_freq': args.iterations_per_checkpoint,
             'checkpoint_at_end': True,
-            'keep_checkpoints_num': 10,
+            # 'keep_checkpoints_num': 10,
             'max_failures': 0,
             'restore': checkpoint_path
         }

@@ -79,6 +79,14 @@ if __name__ == '__main__':
     parser.add_argument('--check_braking_trajectory_torque_limits', action='store_true', default=False)
     parser.add_argument('--use_controller_target_velocities', action='store_true', default=False)
     parser.add_argument('--store_trajectory', action='store_true', default=False)
+    parser.add_argument('--filter_torque_violations', action='store_true', default=False,
+                        help='If set, trajectories with torque violations are not stored and not counted towards --episodes')
+    parser.add_argument('--min_trajectory_duration', type=float, default=None,
+                        help='Minimum trajectory duration in seconds. If torque violation occurs after this duration, trajectory up to violation point is stored.')
+    parser.add_argument('--log_torque_violations', action='store_true', default=True,
+                        help='If set, log messages about torque violations. Default: True')
+    parser.add_argument('--no_log_torque_violations', dest='log_torque_violations', action='store_false',
+                        help='Disable logging of torque violations')
     parser.add_argument('--plot_joint', type=json.loads, default=None)
     parser.add_argument("--logging_level", default='INFO', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'])
     parser.add_argument('--episodes', type=int, default=20)
@@ -146,6 +154,7 @@ if __name__ == '__main__':
 
     robot_scene = args.robot_scene
     # 0: one iiwa robot, 1: two iiwa robots, 2: three iiwa robots, 3: armar6, 4: armar6_continuous, 5: armar6_4
+    # 6: armar4 with fixed hands and legs, 7: armar4 with fixed hands, 8: ur10
 
     if robot_scene == 0:
         num_joints = 7
@@ -161,6 +170,8 @@ if __name__ == '__main__':
         num_joints = 18
     elif robot_scene == 7:  # armar 4 with fixed hands
         num_joints = 30
+    elif robot_scene == 8:  # ur10
+        num_joints = 6
     else:
         raise ValueError("robot_scene " + str(robot_scene) + " not defined")
 
@@ -184,6 +195,12 @@ if __name__ == '__main__':
     # save the list of predicted actions
     store_trajectory = args.store_trajectory
     # save the generated trajectory (joint space)
+    filter_torque_violations = args.filter_torque_violations
+    # if True, trajectories with torque violations are not stored and not counted towards --episodes
+    min_trajectory_duration = args.min_trajectory_duration
+    # minimum trajectory duration in seconds. If torque violation occurs after this duration, trajectory up to violation point is stored
+    log_torque_violations = args.log_torque_violations
+    # if True, log messages about torque violations
 
     acc_limit_factor_braking = 1.0  # for brake trajectories, relative to acc_limit_factor
     jerk_limit_factor_braking = 1.0  # for brake trajectories, relative to the corresponding maximum jerk
@@ -247,6 +264,12 @@ if __name__ == '__main__':
         target_link_name = "hand_fixed"
         # name of the target link for target point reaching
         target_link_offset = [0.03, 0, 0.135]
+        # relative offset between the frame of the target link and the target link point
+    elif robot_scene == 8:  # ur10
+        target_link_name = "wrist_3_link"
+        # name of the target link for target point reaching
+        target_link_offset = [0, 0, 0]
+        #target_link_offset = [0, 0, 0.278]
         # relative offset between the frame of the target link and the target link point
     else:
         target_link_name = "arm_wri2"
@@ -409,7 +432,9 @@ if __name__ == '__main__':
                       target_point_reward_factor=target_point_reward_factor,
                       use_controller_target_velocities=use_controller_target_velocities,
                       seed=seed, solver_iterations=solver_iterations, logging_level=args.logging_level,
-                      random_agent=random_agent)
+                      random_agent=random_agent,
+                      log_torque_violations=log_torque_violations,
+                      min_trajectory_duration=min_trajectory_duration)
 
     if use_splines:
         env = TrackingEnvSpline(**env_config)
@@ -424,12 +449,19 @@ if __name__ == '__main__':
     episode_computation_time_list = []
     start = time.time()
 
-    for i in range(num_episodes):
+    stored_episode_count = 0
+    total_episode_count = 0
+
+    while stored_episode_count < num_episodes:
+        total_episode_count += 1
         done = False
         step = 0
         env.reset()
         sum_of_rewards = 0
         start_episode_timer = time.time()
+        
+        # Track torque violations across the entire episode
+        episode_has_torque_violation = False
 
         while not done:
             if render_video:
@@ -449,23 +481,100 @@ if __name__ == '__main__':
             if np.isnan(obs).any() or np.isnan(reward):
                 raise ValueError("Invalid observation or reward (nan)")
 
+            # Check for torque violations in each step
+            if filter_torque_violations and store_trajectory:
+                step_torque_violation = info.get('max', {}).get('joint_torque_violation', 0.0)
+                if step_torque_violation > 0.5:  # 1.0 means violation, 0.0 means no violation
+                    episode_has_torque_violation = True
+
             step += 1
             sum_of_rewards += reward
 
         end_episode_timer = time.time()
         episode_computation_time = end_episode_timer - start_episode_timer
-        if env.precomputation_time is not None:
-            logging.info("Episode %s took %s seconds. Trajectory duration: %s seconds. Control phase: % seconds.",
-                         i + 1, episode_computation_time,
-                         step * online_trajectory_time_step,
-                         episode_computation_time - env.precomputation_time
-                         )
+
+        # Check for torque violations if filtering is enabled
+        has_torque_violation = False
+        should_store_partial = False
+        violation_step = None
+        
+        if filter_torque_violations and store_trajectory:
+            if episode_has_torque_violation:
+                # Check if we should store partial trajectory (up to violation point)
+                violation_step = env._torque_violation_step
+                if violation_step is not None and min_trajectory_duration is not None:
+                    violation_time = violation_step * online_trajectory_time_step
+                    if violation_time >= min_trajectory_duration:
+                        # Store partial trajectory up to violation point
+                        should_store_partial = True
+                        # Delete the full trajectory file and store partial one
+                        trajectory_file = os.path.join(env._evaluation_dir, "trajectory_data",
+                                                      "episode_{}_{}.json".format(env._episode_counter, env._pid))
+                        if os.path.exists(trajectory_file):
+                            os.remove(trajectory_file)
+                        # Store trajectory up to violation step
+                        env._store_trajectory_data(max_action_step=violation_step)
+                        if log_torque_violations:
+                            logging.info("Episode %s (total: %s) had torque violations at step %s (%.2f s). Stored partial trajectory (min duration: %.2f s).",
+                                         env._episode_counter, total_episode_count, violation_step, violation_time, min_trajectory_duration)
+                    else:
+                        # Violation occurred too early, don't store
+                        has_torque_violation = True
+                        trajectory_file = os.path.join(env._evaluation_dir, "trajectory_data",
+                                                      "episode_{}_{}.json".format(env._episode_counter, env._pid))
+                        if os.path.exists(trajectory_file):
+                            os.remove(trajectory_file)
+                        if log_torque_violations:
+                            logging.info("Episode %s (total: %s) had torque violations at step %s (%.2f s). Not stored (min duration: %.2f s).",
+                                         env._episode_counter, total_episode_count, violation_step, violation_time, min_trajectory_duration)
+                else:
+                    # No min_trajectory_duration specified or violation_step not tracked, don't store
+                    has_torque_violation = True
+                    trajectory_file = os.path.join(env._evaluation_dir, "trajectory_data",
+                                                  "episode_{}_{}.json".format(env._episode_counter, env._pid))
+                    if os.path.exists(trajectory_file):
+                        os.remove(trajectory_file)
+                    if log_torque_violations:
+                        logging.info("Episode %s (total: %s) had torque violations and was not stored.",
+                                     env._episode_counter, total_episode_count)
+
+        if not has_torque_violation or should_store_partial:
+            stored_episode_count += 1
+            episode_computation_time_list.append(episode_computation_time)
+            stored_step = violation_step if should_store_partial else step
+            stored_duration = stored_step * online_trajectory_time_step
+            
+            if should_store_partial:
+                duration_msg = "Partial trajectory duration: %s seconds (violation at step %s)" % (stored_duration, violation_step)
+            else:
+                duration_msg = "Trajectory duration: %s seconds" % stored_duration
+                
+            if env.precomputation_time is not None:
+                logging.info("Episode %s (stored: %s/%s, total: %s) took %s seconds. %s. Control phase: %s seconds.",
+                             env._episode_counter, stored_episode_count, num_episodes, total_episode_count,
+                             episode_computation_time,
+                             duration_msg,
+                             episode_computation_time - env.precomputation_time
+                             )
+            else:
+                logging.info("Episode %s (stored: %s/%s, total: %s) took %s seconds. %s.",
+                             env._episode_counter, stored_episode_count, num_episodes, total_episode_count,
+                             episode_computation_time,
+                             duration_msg)
+            logging.info("Reward: %s", sum_of_rewards)
         else:
-            logging.info("Episode %s took %s seconds. Trajectory duration: %s seconds.", i + 1,
-                         episode_computation_time,
-                         step * online_trajectory_time_step)
-        episode_computation_time_list.append(episode_computation_time)
-        logging.info("Reward: %s", sum_of_rewards)
+            if log_torque_violations:
+                if env.precomputation_time is not None:
+                    logging.info("Episode %s (total: %s) took %s seconds. Trajectory duration: %s seconds. Control phase: %s seconds. (Filtered due to torque violations)",
+                                 env._episode_counter, total_episode_count, episode_computation_time,
+                                 step * online_trajectory_time_step,
+                                 episode_computation_time - env.precomputation_time
+                                 )
+                else:
+                    logging.info("Episode %s (total: %s) took %s seconds. Trajectory duration: %s seconds. (Filtered due to torque violations)",
+                                 env._episode_counter, total_episode_count, episode_computation_time,
+                                 step * online_trajectory_time_step)
+                logging.info("Reward: %s (not stored)", sum_of_rewards)
 
     end = time.time()
     env.close()

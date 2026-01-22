@@ -5,3 +5,7 @@ build/
 
 *.pyc
 *.wrl
+
+path_optimization/
+path_optimization*/
+trajectory_from_real/

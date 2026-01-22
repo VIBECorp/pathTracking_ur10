@@ -26,8 +26,8 @@ from tracking.robot_scene.simulated_robot_scene import SimRobotScene
 from tracking.utils.control_rate import ControlRate
 from tracking.utils.trajectory_manager import TrajectoryManager
 
-SIM_TIME_STEP = 1. / 240.
-CONTROLLER_TIME_STEP = 1. / 200.
+SIM_TIME_STEP = 1. / 125.
+CONTROLLER_TIME_STEP = 1. / 125.
 EPISODES_PER_SIMULATION_RESET = 12500  # to avoid out of memory error
 
 # Renderer
@@ -54,6 +54,7 @@ class TrackingBase(gym.Env):
                  experiment_name,
                  time_stamp=None,
                  evaluation_dir=None,
+                 use_custom_evaluation_dir=False,
                  use_real_robot=False,
                  real_robot_debug_mode=False,
                  use_gui=False,
@@ -144,6 +145,8 @@ class TrackingBase(gym.Env):
                  solver_iterations=None,
                  logging_level="WARNING",
                  random_agent=False,
+                 log_torque_violations=True,
+                 min_trajectory_duration=None,
                  **kwargs):
 
         self._fixed_seed = None
@@ -156,8 +159,12 @@ class TrackingBase(gym.Env):
             self._time_stamp = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
 
         self._experiment_name = experiment_name
-        self._evaluation_dir = os.path.join(evaluation_dir, self.__class__.__name__,
-                                            self._experiment_name, self._time_stamp)
+        # use_custom_evaluation_dir이 True이면 중첩 구조 없이 바로 evaluation_dir 사용
+        if use_custom_evaluation_dir:
+            self._evaluation_dir = evaluation_dir
+        else:
+            self._evaluation_dir = os.path.join(evaluation_dir, self.__class__.__name__,
+                                                self._experiment_name, self._time_stamp)
         self._pid = os.getpid()
 
         if solver_iterations is None:
@@ -271,6 +278,9 @@ class TrackingBase(gym.Env):
         self._target_link_offset = target_link_offset
         self._real_robot_debug_mode = real_robot_debug_mode
         self._random_agent = random_agent
+        self._log_torque_violations = log_torque_violations
+        self._min_trajectory_duration = min_trajectory_duration
+        self._torque_violation_step = None  # step at which torque violation first occurred
 
         self._network_prediction_part_done = None
         self._use_thread_for_movement = use_thread_for_movement
@@ -548,6 +558,7 @@ class TrackingBase(gym.Env):
         self._trajectory_successful = True
         self._current_trajectory_point_index = 0
         self._action_list = []
+        self._torque_violation_step = None  # reset torque violation step tracking
 
         self._network_prediction_part_done = False
 
@@ -565,6 +576,9 @@ class TrackingBase(gym.Env):
                 duration_multiplier = 1 / (0.5 * (self._spline_speed_range[0] + self._spline_speed_range[1]))
             else:
                 duration_multiplier = 1 / self._spline_speed
+        elif self._spline_speed_fixed and hasattr(self, '_spline_speed') and self._spline_speed is not None:
+            # spline_speed가 직접 설정된 경우 (spline_speed_range 없이)
+            duration_multiplier = 1 / self._spline_speed
 
         self._trajectory_manager.reset(get_new_trajectory=get_new_setup, spline_name=spline_name,
                                        duration_multiplier=duration_multiplier)
@@ -785,10 +799,13 @@ class TrackingBase(gym.Env):
                 self._prepare_for_end_of_episode()
                 observation, reward, _, info = self._process_end_of_episode(observation, reward, done, info)
 
+                stored_trajectory_file = None
                 if self._store_actions:
                     self._store_action_list()
                 if self._store_trajectory:
-                    self._store_trajectory_data()
+                    stored_trajectory_file = self._store_trajectory_data()
+                if stored_trajectory_file is not None:
+                    info['stored_trajectory_file'] = stored_trajectory_file
             else:
                 self._brake = True  # slow down the robot prior to stopping the episode
                 done = False
@@ -871,9 +888,13 @@ class TrackingBase(gym.Env):
                 movement_info['max']['joint_{}_torque_abs'.format(j)] = actual_joint_torques_rel_abs_max
                 if actual_joint_torques_rel_abs_max > 1.001:
                     torque_violation = 1.0
-                    logging.warning("Torque violation: t = %s Joint: %s Rel torque %s",
-                                    (self._episode_length - 1) * self._trajectory_time_step, j,
-                                    actual_joint_torques_rel_abs_max)
+                    # Track first occurrence of torque violation
+                    if self._torque_violation_step is None:
+                        self._torque_violation_step = self._episode_length - 1
+                    if self._log_torque_violations:
+                        logging.warning("Torque violation: t = %s Joint: %s Rel torque %s",
+                                        (self._episode_length - 1) * self._trajectory_time_step, j,
+                                        actual_joint_torques_rel_abs_max)
 
             movement_info['max']['joint_torque_violation'] = torque_violation
             movement_info['average']['joint_torque_violation'] = torque_violation
@@ -974,15 +995,78 @@ class TrackingBase(gym.Env):
             f.write(json.dumps(action_dict))
             f.flush()
 
-    def _store_trajectory_data(self):
-        trajectory_dict = {'actions': np.asarray(self._action_list).tolist(),
+    def _store_trajectory_data(self, max_action_step=None):
+        # If max_action_step is specified, truncate trajectory data up to that step
+        actions_to_store = self._action_list[:max_action_step] if max_action_step is not None else self._action_list
+        
+        # Calculate ratio for trajectory control points (they have more points than actions)
+        if max_action_step is not None and len(self._action_list) > 0:
+            # Calculate how many control points correspond to max_action_step actions
+            # Assuming control points are sampled at a higher frequency
+            total_actions = len(self._action_list)
+            total_control_points = len(self._trajectory_manager.generated_trajectory_control_points['positions'])
+            if total_control_points > 0:
+                # Calculate ratio and truncate control points proportionally
+                ratio = max_action_step / total_actions if total_actions > 0 else 1.0
+                max_control_point = int(total_control_points * ratio)
+            else:
+                max_control_point = None
+        else:
+            max_control_point = None
+        
+        # Helper function to truncate dictionary of lists
+        def truncate_trajectory_dict(traj_dict, max_idx):
+            if max_idx is None:
+                return traj_dict
+            truncated = {}
+            for key, value_list in traj_dict.items():
+                truncated[key] = value_list[:max_idx]
+            return truncated
+        
+        trajectory_dict = {'actions': np.asarray(actions_to_store).tolist(),
                            'trajectory_setpoints': self._to_list(
-                               self._trajectory_manager.generated_trajectory_control_points),
+                               truncate_trajectory_dict(
+                                   self._trajectory_manager.generated_trajectory_control_points,
+                                   max_control_point)),
                            'trajectory_measured_actual_values': self._to_list(
-                               self._trajectory_manager.measured_actual_trajectory_control_points),
+                               truncate_trajectory_dict(
+                                   self._trajectory_manager.measured_actual_trajectory_control_points,
+                                   max_control_point)),
                            'trajectory_computed_actual_values': self._to_list(
-                               self._trajectory_manager.computed_actual_trajectory_control_points),
+                               truncate_trajectory_dict(
+                                   self._trajectory_manager.computed_actual_trajectory_control_points,
+                                   max_control_point)),
                            }
+        
+        # spline_config.json에서 initial_position과 final_position 추가
+        if self._trajectory_manager is not None:
+            if self._trajectory_manager._spline_initial_position is not None:
+                trajectory_dict['initial_position'] = self._trajectory_manager._spline_initial_position.tolist()
+            if self._trajectory_manager._spline_final_position is not None:
+                trajectory_dict['final_position'] = self._trajectory_manager._spline_final_position.tolist()
+            # reference spline에 담긴 *_origin 필드 복사
+            try:
+                if getattr(self._trajectory_manager, "_use_splines", False):
+                    ref_name = getattr(self._trajectory_manager, "spline_name", None)
+                    ref_dir = getattr(self._trajectory_manager, "_spline_dir", None)
+                    if ref_name is None and hasattr(self._trajectory_manager, "_spline_name_list"):
+                        # 현재 이름이 없다면 첫 번째를 시도
+                        names = getattr(self._trajectory_manager, "_spline_name_list", [])
+                        if names:
+                            ref_name = names[0]
+                    if ref_name is not None and ref_dir is not None:
+                        ref_path = os.path.join(ref_dir, ref_name)
+                        if os.path.exists(ref_path):
+                            with open(ref_path, 'r') as f:
+                                ref_data = json.load(f)
+                            for field in ['task_origin', 'time_origin', 'joint_origin', 'tool_origin', 'type_origin']:
+                                if field in ref_data and field not in trajectory_dict:
+                                    trajectory_dict[field] = ref_data[field]
+                            # selected_idx도 복사
+                            if 'selected_idx' in ref_data and 'selected_idx' not in trajectory_dict:
+                                trajectory_dict['selected_idx'] = ref_data['selected_idx']
+            except Exception as e:
+                logging.warning("원본 *_origin 필드 복사 중 오류 발생: %s", e)
         eval_dir = os.path.join(self._evaluation_dir, "trajectory_data")
 
         if not os.path.exists(eval_dir):
@@ -992,9 +1076,12 @@ class TrackingBase(gym.Env):
                 if exc.errno != errno.EEXIST:
                     raise
 
-        with open(os.path.join(eval_dir, "episode_{}_{}.json".format(self._episode_counter, self.pid)), 'w') as f:
+        trajectory_file = os.path.join(eval_dir, "episode_{}_{}.json".format(self._episode_counter, self.pid))
+        with open(trajectory_file, 'w') as f:
             f.write(json.dumps(trajectory_dict))
             f.flush()
+        
+        return trajectory_file
 
     def close(self):
         self._robot_scene.disconnect()

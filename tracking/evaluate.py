@@ -241,6 +241,27 @@ def rollout_single_worker_manually():
             episode_control_phase_list.append(control_phase_duration)
         else:
             logging.info("Trajectory duration: %s seconds", (steps + 1) * env.trajectory_time_step)
+        
+        # Termination reason 로깅
+        termination_reason = None
+        if args.store_metrics and 'termination_reason' in info:
+            termination_reason = info['termination_reason']
+        elif hasattr(env, '_termination_reason'):
+            termination_reason = env._termination_reason
+        
+        if termination_reason is not None:
+            reason_name = None
+            for k, v in termination_reasons_dict.items():
+                if k == termination_reason:
+                    reason_name = v
+                    break
+            if reason_name:
+                logging.info("Termination reason: %s (%d)", reason_name, termination_reason)
+            else:
+                logging.info("Termination reason: %d", termination_reason)
+        else:
+            logging.warning("Termination reason을 찾을 수 없습니다.")
+        
         logging.info("Episode reward: %s", reward_total)
         episodes_sampled += 1
 
@@ -288,6 +309,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_gui', action='store_true', default=False)
     parser.add_argument('--switch_gui', action='store_true', default=False)
     parser.add_argument('--online_trajectory_duration', type=float, default=None)
+    parser.add_argument('--online_trajectory_time_step', type=float, default=None)
     parser.add_argument('--check_braking_trajectory_collisions', action='store_true', default=False)
     parser.add_argument('--check_braking_trajectory_torque_limits', action='store_true', default=False)
     parser.add_argument('--collision_check_time', type=float, default=None)
@@ -326,9 +348,13 @@ if __name__ == '__main__':
     parser.add_argument('--no_terminate_on_balancing_robot_base_pos_deviation', action='store_true', default=False)
     parser.add_argument('--no_terminate_on_balancing_robot_base_orn_deviation', action='store_true', default=False)
     # end of robot base balancing settings
+    parser.add_argument('--vel_limit_factor', type=float, default=None)
+    parser.add_argument('--acc_limit_factor', type=float, default=None)
     parser.add_argument('--torque_limit_factor', type=float, default=None)
     parser.add_argument('--store_actions', action='store_true', default=False)
     parser.add_argument('--store_trajectory', action='store_true', default=False)
+    parser.add_argument('--store_real_trajectory', action='store_true', default=False,
+                        help='Store trajectory in real robot format (type, joint, time)')
     parser.add_argument('--store_network_data', action='store_true', default=False)
     parser.add_argument('--no_exploration', action='store_true', default=False)
     parser.add_argument('--log_obstacle_data', action='store_true', default=False)
@@ -462,6 +488,9 @@ if __name__ == '__main__':
     if args.online_trajectory_duration is not None:
         env_config['online_trajectory_duration'] = args.online_trajectory_duration
 
+    if args.online_trajectory_time_step is not None:
+        env_config['online_trajectory_time_step'] = args.online_trajectory_time_step
+
     if args.plot_trajectory:
 
         env_config['plot_trajectory'] = True
@@ -483,6 +512,12 @@ if __name__ == '__main__':
 
     if args.collision_check_time is not None:
         env_config['collision_check_time'] = args.collision_check_time
+
+    if args.vel_limit_factor is not None:
+        env_config['vel_limit_factor'] = args.vel_limit_factor
+
+    if args.acc_limit_factor is not None:
+        env_config['acc_limit_factor'] = args.acc_limit_factor
 
     if args.torque_limit_factor is not None:
         env_config['torque_limit_factor'] = args.torque_limit_factor

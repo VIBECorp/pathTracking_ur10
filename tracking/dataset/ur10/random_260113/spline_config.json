@@ -1,0 +1,1 @@
+{"max_dis_between_knots": 0.10488959094418408, "num_train": 960, "num_test": 240, "resampling_distance": 0.1, "curvature_sampling_distance": null, "length_correction_step_size": 0.0002, "use_normalized_length_correction_step_size": false}

@@ -62,6 +62,8 @@ class TrajectoryManager(object):
         self._spline_use_normalized_length_correction_step_size = None
         self._spline_length_correction_step_size = None
         self._spline_reflection_vectors = None
+        self._spline_initial_position = None
+        self._spline_final_position = None
         self._reference_spline_data = {}
         self._spline_name_list = []
         if self._use_splines and self._spline_dir is not None:
@@ -275,16 +277,82 @@ class TrajectoryManager(object):
 
                 self._spline_name = spline_name
                 self._reference_spline = self.get_reference_spline(spline_name=spline_name)
-                u_arc_start = np.random.uniform(self._spline_u_arc_start_range[0], self._spline_u_arc_start_range[1])
-                u_arc_end = np.random.uniform(min(u_arc_start + self._spline_u_arc_diff_min, 1.0),
-                                              min(u_arc_start + self._spline_u_arc_diff_max, 1.0))
+                
+                # spline 파일에서 selected_idx와 joint_origin 확인하여 초기 위치 업데이트
+                spline_path = os.path.join(self._spline_dir, spline_name)
+                if os.path.exists(spline_path):
+                    try:
+                        with open(spline_path, 'r') as f:
+                            spline_file_data = json.load(f)
+                        if 'selected_idx' in spline_file_data and 'joint_origin' in spline_file_data:
+                            selected_idx = spline_file_data['selected_idx']
+                            joint_origin = np.array(spline_file_data['joint_origin'])
+                            if len(selected_idx) > 0 and len(joint_origin) > 0:
+                                first_selected_idx = sorted(selected_idx)[0]
+                                if first_selected_idx < len(joint_origin):
+                                    # selected_idx의 첫 번째에 해당하는 원본 자세를 초기 위치로 사용
+                                    self._spline_initial_position = np.array(joint_origin[first_selected_idx])
+                                    logging.info(f"selected_idx의 첫 번째({first_selected_idx})에 해당하는 원본 자세를 초기 위치로 사용: {self._spline_initial_position}")
+                    except Exception as e:
+                        logging.warning(f"spline 파일에서 selected_idx/joint_origin 읽기 실패: {e}")
+                
+                # 실제 로봇 데이터의 초기 위치가 있으면 u_arc_start를 0으로 설정 (실제 로봇 초기 위치는 spline의 u=0 위치와 일치)
+                if self._spline_initial_position is not None:
+                    u_arc_start = 0.0
+                    logging.info("실제 로봇 초기 위치 사용. u_arc_start를 0으로 설정합니다.")
+                    # 실제 로봇 데이터에서 온 spline의 경우 전체를 따라가도록 u_arc_end를 1.0으로 설정
+                    u_arc_end = 1.0
+                    logging.info("실제 로봇 데이터 spline이므로 전체 spline을 따라가도록 u_arc_end를 1.0으로 설정합니다.")
+                else:
+                    u_arc_start = np.random.uniform(self._spline_u_arc_start_range[0], self._spline_u_arc_start_range[1])
+                    u_arc_end = np.random.uniform(min(u_arc_start + self._spline_u_arc_diff_min, 1.0),
+                                                  min(u_arc_start + self._spline_u_arc_diff_max, 1.0))
                 self._reference_spline.set_u_start(u_arc_start=u_arc_start)
                 self._reference_spline.set_u_end_index(u_arc_end_min=u_arc_end)
                 logging.info("Using spline %s (u arc start %s, u arc end %s).", spline_name, u_arc_start, u_arc_end)
-                reference_spline_start_position = self._reference_spline.get_joint_position(u_arc=u_arc_start)
-                self._trajectory_start_position = np.zeros(self._env._robot_scene.num_manip_joints)
-                self._trajectory_start_position[self._env._robot_scene.spline_joint_mask] = \
-                    reference_spline_start_position
+                
+                # 실제 로봇 데이터의 초기 위치가 있으면 사용, 없으면 spline의 시작 위치 사용
+                if self._spline_initial_position is not None:
+                    
+                    # spline joint mask에 맞춰 초기 위치 설정
+                    self._trajectory_start_position = np.zeros(self._env._robot_scene.num_manip_joints)
+                    num_spline_joints = len(self._spline_initial_position)
+                    if num_spline_joints == len(self._env._robot_scene.spline_joint_mask):
+                        # spline의 u=0 위치 확인
+                        spline_u0_position = self._reference_spline.get_joint_position(u_arc=0.0)
+                        initial_pos_diff = np.linalg.norm(self._spline_initial_position - spline_u0_position)
+                        
+                        if initial_pos_diff > 1e-6:  # 위치 차이가 있으면 경고
+                            logging.warning("실제 로봇 초기 위치와 spline u=0 위치가 다릅니다. "
+                                          f"차이: {initial_pos_diff:.6f} rad. "
+                                          "spline u=0 위치를 사용하여 deviation을 줄입니다.")
+                            # spline의 u=0 위치를 사용하여 deviation 최소화
+                            reference_spline_start_position = spline_u0_position
+                            self._trajectory_start_position[self._env._robot_scene.spline_joint_mask] = \
+                                spline_u0_position
+                        else:
+                            # 위치가 일치하면 실제 로봇 초기 위치 사용
+                            self._trajectory_start_position[self._env._robot_scene.spline_joint_mask] = \
+                                self._spline_initial_position
+                            reference_spline_start_position = self._spline_initial_position
+                        
+                        logging.info("초기 위치 설정: %s (spline u=0 위치와의 차이: %.6f rad)", 
+                                   self._trajectory_start_position[self._env._robot_scene.spline_joint_mask],
+                                   initial_pos_diff)
+                    else:
+                        logging.warning("초기 위치의 관절 개수(%d)가 spline joint mask(%d)와 다릅니다. "
+                                      "spline 시작 위치를 사용합니다.", 
+                                      num_spline_joints, len(self._env._robot_scene.spline_joint_mask))
+                        reference_spline_start_position = self._reference_spline.get_joint_position(u_arc=u_arc_start)
+                        self._trajectory_start_position = np.zeros(self._env._robot_scene.num_manip_joints)
+                        self._trajectory_start_position[self._env._robot_scene.spline_joint_mask] = \
+                            reference_spline_start_position
+                else:
+                    # 기존 동작: spline의 시작 위치 사용
+                    reference_spline_start_position = self._reference_spline.get_joint_position(u_arc=u_arc_start)
+                    self._trajectory_start_position = np.zeros(self._env._robot_scene.num_manip_joints)
+                    self._trajectory_start_position[self._env._robot_scene.spline_joint_mask] = \
+                        reference_spline_start_position
                 if self._spline_compute_cartesian_deviation:
                     self._spline_target_point = \
                         convert_joint_space_to_cartesian_space(self._env, reference_spline_start_position)[:, 0, :]
@@ -350,6 +418,13 @@ class TrajectoryManager(object):
             self._spline_length_correction_step_size = spline_config_dict["length_correction_step_size"]
             if "reflection_vectors" in spline_config_dict:
                 self._spline_reflection_vectors = spline_config_dict["reflection_vectors"]
+            # 실제 로봇 데이터의 초기 위치가 있으면 저장
+            if "initial_position" in spline_config_dict:
+                self._spline_initial_position = np.array(spline_config_dict["initial_position"])
+                logging.info("Spline config에서 초기 위치 로드: %s", self._spline_initial_position)
+            if "final_position" in spline_config_dict:
+                self._spline_final_position = np.array(spline_config_dict["final_position"])
+                logging.info("Spline config에서 최종 위치 로드: %s", self._spline_final_position)
 
         else:
             raise ValueError("Could not find reference_spline config {}".format(spline_config_path))

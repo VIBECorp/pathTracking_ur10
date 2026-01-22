@@ -229,8 +229,10 @@ class DatasetGenerator:
         for i in range(self._num_trajectories):
             train_or_test = 'train' if i < num_train else 'test'
             spline_name = os.path.basename(self._valid_trajectory_data_files[i])
-            logging.info('Processing trajectory {}/{}: "{}" ({})'.format(i + 1, self._num_trajectories, spline_name,
-                                                                         train_or_test))
+            progress_percent = (i + 1) / self._num_trajectories * 100
+            logging.info('Processing trajectory {}/{} ({:.1f}%): "{}" ({})'.format(i + 1, self._num_trajectories, 
+                                                                                    progress_percent, spline_name,
+                                                                                    train_or_test))
             curve_data = np.array(self._trajectory_data[i][self._trajectory_key]['positions']).T[self._use_joint, :]
 
             final_spline, max_distance_spline = self._compute_spline_from_curve_data(curve_data=curve_data)
@@ -338,9 +340,11 @@ class DatasetGenerator:
             self._env._reset_video_recorder()
 
         for i in range(self._num_splines):
-            logging.info('Processing reference_spline {}/{}: "{}"'.format(i + 1, self._num_splines,
-                                                                          os.path.basename(
-                                                                              self._valid_spline_data_files[i])))
+            progress_percent = (i + 1) / self._num_splines * 100
+            logging.info('Processing reference_spline {}/{} ({:.1f}%): "{}"'.format(i + 1, self._num_splines,
+                                                                                      progress_percent,
+                                                                                      os.path.basename(
+                                                                                          self._valid_spline_data_files[i])))
             spline = Spline.load_from_dict(self._spline_data[i], reflection_vectors=reflection_vectors)
             spline.reset(random_reflection_vector_index=True)
 
