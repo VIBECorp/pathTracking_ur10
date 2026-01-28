@@ -9,3 +9,4 @@ build/
 path_optimization/
 path_optimization*/
 trajectory_from_real/
+opt_test/
